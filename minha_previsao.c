@@ -1,261 +1,58 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <float.h>
-#include <omp.h>
-
-#define NUM_FEATURES 5
-#define NUM_TREES 100
-#define MAX_NODES_PER_TREE 15
-#define MAX_LINE_LENGTH 256
-
 /*
- * Cada árvore é uma árvore binária completa com 15 nós:
+ * MeteoPel - Versão Paralela em Memória Compartilhada (OpenMP)
+ * Paraleliza: (1) cálculo de faixas (reduction min/max),
+ *             (2) construção da floresta sintética (PRNG stateless thread-safe),
+ *             (3) inferência das amostras.
  *
- *              0
- *          /       \
- *         1         2
- *       /  \       /  \
- *      3    4     5    6
- *     / \  / \   / \  / \
- *    7  8 9  10 11 12 13 14
- *
- * Nós 0..6  : nós internos
- * Nós 7..14 : folhas
+ * Compilação direta (retrocompatível com README original):
+ *   gcc -O3 -fopenmp -o meteo_omp minha_previsao.c -lm
  */
 
-#define NUM_INTERNAL_NODES 7
-#define FIRST_LEAF 7
+#include <omp.h>
+#include "include/forest_common.h"
 
-
-/* ================================================================
- * Estruturas de dados
- * ================================================================ */
-
-typedef struct {
-    int feature_index;   /* -1 indica folha */
-    float threshold;
-    float value;
-    int left_child;
-    int right_child;
-} Node;
-
-typedef struct {
-    Node nodes[NUM_TREES * MAX_NODES_PER_TREE];
-    int tree_roots[NUM_TREES];
-} RandomForest;
-
-
-/* ================================================================
- * Leitura dos dados meteorológicos
- * ================================================================ */
-
-float* read_csv_data(const char* filename, int* out_num_samples)
-{
-    FILE* file = fopen(filename, "r");
-
-    if (!file) {
-        perror("Erro ao abrir o arquivo CSV");
-        return NULL;
-    }
-
-    char line[MAX_LINE_LENGTH];
-    int line_count = 0;
-
-    /* Ignora o cabeçalho. */
-    if (fgets(line, sizeof(line), file) == NULL) {
-        fprintf(stderr, "Erro: arquivo CSV vazio.\n");
-        fclose(file);
-        return NULL;
-    }
-
-    /*
-     * Primeira passagem:
-     * determina quantas linhas válidas existem.
-     */
-    while (fgets(line, sizeof(line), file)) {
-
-        float f0, f1, f2, f3, f4;
-
-        if (sscanf(line, "%f,%f,%f,%f,%f",
-                   &f0, &f1, &f2, &f3, &f4) == NUM_FEATURES) {
-            line_count++;
-        }
-    }
-
-    if (line_count == 0) {
-        fprintf(stderr,
-                "Erro: nenhuma amostra válida encontrada no CSV.\n");
-        fclose(file);
-        return NULL;
-    }
-
-    float* features =
-        malloc((size_t)line_count * NUM_FEATURES * sizeof(float));
-
-    if (!features) {
-        fprintf(stderr, "Erro de alocação de memória.\n");
-        fclose(file);
-        return NULL;
-    }
-
-    /*
-     * Segunda passagem:
-     * carrega efetivamente os dados.
-     */
-    rewind(file);
-
-    /* Ignora novamente o cabeçalho. */
-    fgets(line, sizeof(line), file);
-
-    int sample = 0;
-
-    while (fgets(line, sizeof(line), file) &&
-           sample < line_count) {
-
-        float f0, f1, f2, f3, f4;
-
-        if (sscanf(line, "%f,%f,%f,%f,%f",
-                   &f0, &f1, &f2, &f3, &f4) == NUM_FEATURES) {
-
-            features[sample * NUM_FEATURES + 0] = f0;
-            features[sample * NUM_FEATURES + 1] = f1;
-            features[sample * NUM_FEATURES + 2] = f2;
-            features[sample * NUM_FEATURES + 3] = f3;
-            features[sample * NUM_FEATURES + 4] = f4;
-
-            sample++;
-        }
-    }
-
-    fclose(file);
-
-    *out_num_samples = sample;
-
-    return features;
-}
-
-
-/* ================================================================
- * Determinação das faixas observadas no conjunto de dados
- * ================================================================ */
-
-void compute_feature_ranges(
+void compute_feature_ranges_omp(
     const float* features,
     int num_samples,
     float min_values[NUM_FEATURES],
     float max_values[NUM_FEATURES])
 {
-    for (int f = 0; f < NUM_FEATURES; f++) {
-        min_values[f] = FLT_MAX;
-        max_values[f] = -FLT_MAX;
-    }
+    float min0 = FLT_MAX, min1 = FLT_MAX, min2 = FLT_MAX, min3 = FLT_MAX, min4 = FLT_MAX;
+    float max0 = -FLT_MAX, max1 = -FLT_MAX, max2 = -FLT_MAX, max3 = -FLT_MAX, max4 = -FLT_MAX;
 
+    #pragma omp parallel for schedule(static) \
+        reduction(min:min0, min1, min2, min3, min4) \
+        reduction(max:max0, max1, max2, max3, max4)
     for (int i = 0; i < num_samples; i++) {
-
-        for (int f = 0; f < NUM_FEATURES; f++) {
-
-            float value =
-                features[i * NUM_FEATURES + f];
-
-            if (value < min_values[f])
-                min_values[f] = value;
-
-            if (value > max_values[f])
-                max_values[f] = value;
-        }
+        const float* s = &features[(size_t)i * NUM_FEATURES];
+        if (s[0] < min0) min0 = s[0];
+        if (s[1] < min1) min1 = s[1];
+        if (s[2] < min2) min2 = s[2];
+        if (s[3] < min3) min3 = s[3];
+        if (s[4] < min4) min4 = s[4];
+        if (s[0] > max0) max0 = s[0];
+        if (s[1] > max1) max1 = s[1];
+        if (s[2] > max2) max2 = s[2];
+        if (s[3] > max3) max3 = s[3];
+        if (s[4] > max4) max4 = s[4];
     }
+
+    min_values[0] = min0; min_values[1] = min1; min_values[2] = min2;
+    min_values[3] = min3; min_values[4] = min4;
+    max_values[0] = max0; max_values[1] = max1; max_values[2] = max2;
+    max_values[3] = max3; max_values[4] = max4;
 }
 
-
-/* ================================================================
- * Geração de números aleatórios
- * ================================================================ */
-
-float random_float(float min_value, float max_value)
-{
-    float r = (float)rand() / (float)RAND_MAX;
-
-    return min_value +
-           r * (max_value - min_value);
-}
-
-
-/* ================================================================
- * Construção da floresta sintética
- * ================================================================ */
-
-void build_random_forest_synthetic(
+void build_random_forest_synthetic_omp(
     RandomForest* forest,
     const float min_values[NUM_FEATURES],
     const float max_values[NUM_FEATURES])
 {
-    int node_counter = 0;
-
+    #pragma omp parallel for schedule(static)
     for (int t = 0; t < NUM_TREES; t++) {
-
-        int tree_start = node_counter;
-
-        forest->tree_roots[t] = tree_start;
-
-        /*
-         * Cria os sete nós internos.
-         */
-        for (int n = 0; n < NUM_INTERNAL_NODES; n++) {
-
-            int feature = rand() % NUM_FEATURES;
-
-            float threshold =
-                random_float(
-                    min_values[feature],
-                    max_values[feature]);
-
-            int left =
-                tree_start + (2 * n + 1);
-
-            int right =
-                tree_start + (2 * n + 2);
-
-            forest->nodes[tree_start + n] =
-                (Node){
-                    feature,
-                    threshold,
-                    0.0f,
-                    left,
-                    right
-                };
-        }
-
-        /*
-         * Cria as oito folhas.
-         *
-         * Os valores são saídas sintéticas utilizadas
-         * para compor a carga computacional do experimento.
-         */
-        for (int n = FIRST_LEAF;
-             n < MAX_NODES_PER_TREE;
-             n++) {
-
-            float prediction =
-                random_float(0.0f, 35.0f);
-
-            forest->nodes[tree_start + n] =
-                (Node){
-                    -1,
-                    0.0f,
-                    prediction,
-                    -1,
-                    -1
-                };
-        }
-
-        node_counter += MAX_NODES_PER_TREE;
+        build_tree_stateless(forest, t, FOREST_SEED_DEFAULT, min_values, max_values);
     }
 }
-
-
-/* ================================================================
- * Inferência paralela com OpenMP
- * ================================================================ */
 
 void predict_random_forest_omp(
     const float* features,
@@ -264,259 +61,101 @@ void predict_random_forest_omp(
     int num_samples)
 {
     #pragma omp parallel for schedule(static)
-
     for (int i = 0; i < num_samples; i++) {
-
-        float total_prediction = 0.0f;
-
-        const float* sample =
-            &features[i * NUM_FEATURES];
-
-        /*
-         * Cada thread processa todas as árvores para
-         * a amostra que lhe foi atribuída.
-         */
-        for (int t = 0; t < NUM_TREES; t++) {
-
-            int current_node =
-                forest->tree_roots[t];
-
-            /*
-             * Percorre a árvore até encontrar uma folha.
-             */
-            while (1) {
-
-                Node node =
-                    forest->nodes[current_node];
-
-                if (node.feature_index == -1) {
-
-                    total_prediction +=
-                        node.value;
-
-                    break;
-                }
-
-                float feature_value =
-                    sample[node.feature_index];
-
-                if (feature_value <= node.threshold) {
-
-                    current_node =
-                        node.left_child;
-
-                } else {
-
-                    current_node =
-                        node.right_child;
-                }
-            }
-        }
-
-        /*
-         * Resultado da floresta:
-         * média das previsões das árvores.
-         */
-        predictions[i] =
-            total_prediction / NUM_TREES;
+        predictions[i] = predict_sample_cpu(&features[(size_t)i * NUM_FEATURES], forest);
     }
 }
-
-
-/* ================================================================
- * Interpretação textual dos resultados
- * ================================================================ */
-
-const char* classificar_risco_chuva(float mm_previstos)
-{
-    if (mm_previstos < 1.0f)
-        return "Tempo Seco / Estável";
-
-    if (mm_previstos < 5.0f)
-        return "Chuva Leve / Garoa";
-
-    if (mm_previstos < 15.0f)
-        return "Chuva Moderada";
-
-    if (mm_previstos < 30.0f)
-        return "ALERTA: Chuva Forte";
-
-    return "PERIGO: Tempestade Severa";
-}
-
-
-/* ================================================================
- * Programa principal
- * ================================================================ */
 
 int main(int argc, char* argv[])
 {
-    const char* csv_filename =
-        "dados_pelotas.csv";
-
-    /*
-     * Permite especificar outro arquivo pela linha de comando.
-     */
-    if (argc > 1) {
-        csv_filename = argv[1];
+    CliOptions opt;
+    if (cli_parse(argc, argv, &opt)) {
+        return EXIT_SUCCESS;
     }
 
     printf("=== RANDOM FOREST - INFERENCIA OPENMP ===\n\n");
+    printf("Arquivo: %s\n", opt.csv_filename);
 
-    printf("Arquivo: %s\n", csv_filename);
-
-
-    /* ------------------------------------------------------------
-     * Leitura dos dados meteorológicos
-     * ------------------------------------------------------------ */
-
-    int num_samples = 0;
-
-    float* features =
-        read_csv_data(
-            csv_filename,
-            &num_samples);
-
-    if (!features) {
+    int base_samples = 0;
+    float* base_features = read_csv_data(opt.csv_filename, &base_samples);
+    if (!base_features) {
         return EXIT_FAILURE;
     }
 
-    printf("Amostras carregadas: %d\n",
-           num_samples);
+    int num_samples = base_samples;
+    float* features = base_features;
+    if (opt.expand_n > 0) {
+        features = expand_features_cyclic(base_features, base_samples, opt.expand_n);
+        free(base_features);
+        if (!features) {
+            fprintf(stderr, "Erro de alocação ao expandir amostras.\n");
+            return EXIT_FAILURE;
+        }
+        num_samples = opt.expand_n;
+    }
 
-
-    /* ------------------------------------------------------------
-     * Determinação das faixas observadas
-     * ------------------------------------------------------------ */
+    printf("Amostras carregadas: %d\n", num_samples);
 
     float min_values[NUM_FEATURES];
     float max_values[NUM_FEATURES];
+    double t_ranges_ini = forest_wall_time_sec();
+    compute_feature_ranges_omp(features, num_samples, min_values, max_values);
+    double t_ranges_fim = forest_wall_time_sec();
+    print_feature_ranges(min_values, max_values);
 
-    compute_feature_ranges(
-        features,
-        num_samples,
-        min_values,
-        max_values);
-
-
-    printf("\nFaixas observadas:\n");
-
-    for (int f = 0; f < NUM_FEATURES; f++) {
-
-        printf(
-            "Feature %d: %.2f a %.2f\n",
-            f,
-            min_values[f],
-            max_values[f]);
-    }
-
-
-    /* ------------------------------------------------------------
-     * Alocação das estruturas utilizadas na inferência
-     * ------------------------------------------------------------ */
-
-    float* predictions =
-        malloc((size_t)num_samples *
-               sizeof(float));
-
-    RandomForest* forest =
-        malloc(sizeof(RandomForest));
-
-    if (!predictions || !forest) {
-
-        fprintf(stderr,
-                "Erro de alocação de memória.\n");
-
-        free(features);
-        free(predictions);
-        free(forest);
-
+    float* predictions = (float*)malloc((size_t)num_samples * sizeof(float));
+    RandomForest* forest = (RandomForest*)malloc(sizeof(RandomForest));
+    double* times = (double*)malloc((size_t)opt.repeat * sizeof(double));
+    if (!predictions || !forest || !times) {
+        fprintf(stderr, "Erro de alocação de memória.\n");
+        free(features); free(predictions); free(forest); free(times);
         return EXIT_FAILURE;
     }
 
+    double t_build_ini = forest_wall_time_sec();
+    if (opt.model_filename) {
+        if (!load_forest_bin(opt.model_filename, forest)) {
+            free(features); free(predictions); free(forest); free(times);
+            return EXIT_FAILURE;
+        }
+        printf("\nModelo carregado: %s\n", opt.model_filename);
+    } else if (opt.legacy_rand) {
+        build_random_forest_legacy(forest, min_values, max_values);
+        printf("\nModelo: floresta sintetica (rand legado, seed=%u)\n", FOREST_SEED_DEFAULT);
+    } else {
+        build_random_forest_synthetic_omp(forest, min_values, max_values);
+        printf("\nModelo: floresta sintetica paralela deterministica (seed=%u)\n", FOREST_SEED_DEFAULT);
+    }
+    double t_build_fim = forest_wall_time_sec();
 
-    /* ------------------------------------------------------------
-     * Construção da floresta
-     * ------------------------------------------------------------ */
+    int num_threads = omp_get_max_threads();
 
-    /*
-     * Seed fixa para garantir que todas as execuções
-     * utilizem exatamente a mesma floresta.
-     */
-    srand(42);
-
-    build_random_forest_synthetic(
-        forest,
-        min_values,
-        max_values);
-
-
-    /* ------------------------------------------------------------
-     * Inferência paralela
-     * ------------------------------------------------------------ */
-
-    int num_threads =
-        omp_get_max_threads();
-
-    double start =
-        omp_get_wtime();
-
-    predict_random_forest_omp(
-        features,
-        forest,
-        predictions,
-        num_samples);
-
-    double end =
-        omp_get_wtime();
-
-
-    /* ------------------------------------------------------------
-     * Resultados de desempenho
-     * ------------------------------------------------------------ */
-
-    printf(
-        "\nThreads OpenMP: %d\n",
-        num_threads);
-
-    printf(
-        "Tempo de inferencia: %.6f segundos\n",
-        end - start);
-
-
-    /* ------------------------------------------------------------
-     * Interpretação dos primeiros resultados
-     * ------------------------------------------------------------ */
-
-    int print_limit =
-        num_samples < 5
-        ? num_samples
-        : 5;
-
-    printf(
-        "\n--- PREVISÃO DE CHUVA PARA A PRÓXIMA HORA (PELOTAS) ---\n");
-
-    for (int i = 0; i < print_limit; i++) {
-
-        float mm = predictions[i];
-
-        printf(
-            "Hora [%d] -> "
-            "Estimativa: %5.2f mm/h | "
-            "Status: %s\n",
-            i,
-            mm,
-            classificar_risco_chuva(mm));
+    for (int w = 0; w < opt.warmup; w++) {
+        predict_random_forest_omp(features, forest, predictions, num_samples);
     }
 
+    for (int r = 0; r < opt.repeat; r++) {
+        double start = forest_wall_time_sec();
+        predict_random_forest_omp(features, forest, predictions, num_samples);
+        double end = forest_wall_time_sec();
+        times[r] = end - start;
+    }
 
-    /* ------------------------------------------------------------
-     * Liberação de memória
-     * ------------------------------------------------------------ */
+    double elapsed = median_double(times, opt.repeat);
+    printf("\nThreads OpenMP: %d\n", num_threads);
+    printf("Tempo faixas (OpenMP): %.6f segundos\n", t_ranges_fim - t_ranges_ini);
+    printf("Tempo construcao/carga (OpenMP): %.6f segundos\n", t_build_fim - t_build_ini);
+    printf("Tempo de inferencia: %.6f segundos\n", elapsed);
+
+    if (opt.dump_filename) {
+        dump_predictions_bin(opt.dump_filename, predictions, num_samples);
+    }
+
+    print_rain_forecast(predictions, num_samples, opt.forecast_tail);
 
     free(features);
     free(predictions);
     free(forest);
-
+    free(times);
     return EXIT_SUCCESS;
 }

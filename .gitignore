@@ -1,7 +1,8 @@
 # ============================================================
-# Dados
+# Dados (ignora CSVs soltos na raiz, mas preserva evidencias em saidas/)
 # ============================================================
 *.csv
+!saidas/*.csv
 
 # ============================================================
 # Arquivos objeto e bibliotecas
@@ -25,7 +26,19 @@ a.out
 # Executáveis do projeto
 meteo
 meteo_omp
+meteo_mpi
 meteo_cuda
+minha_previsao
+
+# ============================================================
+# Python / Notebook / Colab temporários
+# ============================================================
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+sample_data/
+saidas/sample_data/
 
 # ============================================================
 # Backups e arquivos temporários
